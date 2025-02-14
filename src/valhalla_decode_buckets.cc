@@ -24,9 +24,11 @@ int main(int argc, char** argv) {
   
   options.add_options()
     ("h,help", "Print this help message.")
-    ("ENCODED", "The encoded strings to process", cxxopts::value<std::vector<std::string>>());
+    ("ENCODED", "The encoded string to process", cxxopts::value<std::vector<std::string>>());
   // clang-format on
 
+  options.custom_help("ENCODED");
+  options.positional_help("The encoded string to process");
   options.parse_positional({"ENCODED"});
   auto vm = options.parse(argc, argv);
 

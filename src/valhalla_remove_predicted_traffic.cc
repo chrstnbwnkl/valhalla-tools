@@ -22,6 +22,7 @@ int main(int argc, char** argv) {
     // clang-format on
 
     auto result = options.parse(argc, argv);
+    options.custom_help("");
     if (!parse_common_args(program, options, result, pt, "mjolnir.logging", true))
       return EXIT_SUCCESS;
 
