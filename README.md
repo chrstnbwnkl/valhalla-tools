@@ -1,4 +1,7 @@
-# A Collection of useful tools and functions for working with Valhalla data
+# A Collection of useful tools for working with Valhalla data
+
+A lot of little tools like these have been loosely flying around on my computer for a while now. I'll try my best to organize them in this
+repo. Use at your own risk, the API might change any time. Contributions are fine, just please open an issue first.
 
 ### CLI tools
 
@@ -31,9 +34,14 @@ Usage:
   -h, --help  Print this help message.
 ```
 
+Outputs one row per 5-minute bucket, each containing the index and the decoded speed separated by a comma.
+
 ### Building from source
 
+You need valhalla installed on your system. CMake will try to locate the lib and the headers using PkgConfig.
+
 ```sh
+git submodules update --init --recursive
 cmake -B build
 cmake --build build -j$(nproc)
 ```
