@@ -36,6 +36,18 @@ Usage:
 
 Outputs one row per 5-minute bucket, each containing the index and the decoded speed separated by a comma.
 
+## `valhalla_get_tile_ids`
+
+```sh
+
+```
+
+## `valhalla_export_tiles`
+
+```sh
+
+```
+
 ### Building from source
 
 You need valhalla installed on your system. CMake will try to locate the lib and the headers using PkgConfig.

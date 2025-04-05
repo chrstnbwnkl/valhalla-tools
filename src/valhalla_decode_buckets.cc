@@ -4,7 +4,8 @@
 
 namespace {
 void print_bucket_speeds(const std::string& encoded) {
-  std::array<int16_t, 200> coefs = valhalla::baldr::decode_compressed_speeds(encoded);
+  std::array<int16_t, 200> coefs =
+      valhalla::baldr::decode_compressed_speeds(encoded);
   for (size_t i = 0; i < valhalla::baldr::kBucketsPerWeek; ++i) {
     auto speed = valhalla::baldr::decompress_speed_bucket(&coefs[0], i);
     std::cout << i << "," << speed << "\n";
@@ -40,8 +41,10 @@ int main(int argc, char** argv) {
   if (vm.count("ENCODED") == 1) {
     encoded = vm["ENCODED"].as<std::vector<std::string>>();
   } else {
-    std::cout << "Single encoded speeds string required\n";
+    std::cerr << "Single encoded speeds string required\n";
+    return EXIT_FAILURE;
   }
 
   print_bucket_speeds(encoded[0]);
+  return EXIT_SUCCESS;
 }
