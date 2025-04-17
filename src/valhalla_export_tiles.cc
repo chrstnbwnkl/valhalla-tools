@@ -16,76 +16,42 @@
 
 namespace {
 
+const std::string kEdgeUrban = "edge.urban";
+
 struct AttributeFilter {
-  AttributeFilter(const std::vector<std::string>& includes,
-                  const std::vector<std::string>& excludes) {
-    for (const auto& include : includes) {
-      if (include == valhalla::baldr::kEdgeId) {
-        localidx = true;
-        continue;
-      }
-      if (include == valhalla::baldr::kEdgeRoadClass) {
-        road_class = true;
-        continue;
-      }
-      if (include == valhalla::baldr::kEdgeUse) {
-        use = true;
-        continue;
-      }
-      if (include == valhalla::baldr::kEdgeSpeed) {
-        speed = true;
-        continue;
-      }
-      if (include == valhalla::baldr::kEdgeTunnel) {
-        tunnel = true;
-        continue;
-      }
-      if (include == valhalla::baldr::kEdgeBridge) {
-        bridge = true;
-        continue;
-      }
-      if (include == valhalla::baldr::kEdgeTraversability) {
-        traversability = true;
-        continue;
-      }
-      if (include == valhalla::baldr::kEdgeSurface) {
-        surface = true;
-        continue;
-      }
+  AttributeFilter(std::vector<std::string>&& includes_v,
+                  std::vector<std::string>&& excludes_v) {
+    std::unordered_set<std::string> includes;
+    includes.reserve(includes_v.size());
+    for (auto& inc : includes_v) {
+      includes.insert(std::move(inc));
+    }
+    std::unordered_set<std::string> excludes;
+    excludes.reserve(excludes_v.size());
+    for (auto& exc : excludes_v) {
+      excludes.insert(std::move(exc));
     }
 
-    for (const auto& exclude : excludes) {
-      if (exclude == valhalla::baldr::kEdgeId) {
-        localidx = false;
-        continue;
+    std::vector<std::pair<bool&, std::string>> pairs = {
+        {localidx, kEdgeId},
+        {density, kEdgeDensity},
+        {road_class, kEdgeRoadClass},
+        {use, kEdgeUse},
+        {speed, kEdgeSpeed},
+        {tunnel, kEdgeTunnel},
+        {bridge, kEdgeBridge},
+        {traversability, kEdgeTraversability},
+        {surface, kEdgeSurface},
+        {urban, kEdgeIsUrban},
+    };
+
+    for (auto& p : pairs) {
+      if (includes.find(p.second) != includes.end()) {
+        p.first = true;
       }
-      if (exclude == valhalla::baldr::kEdgeRoadClass) {
-        road_class = false;
-        continue;
-      }
-      if (exclude == valhalla::baldr::kEdgeUse) {
-        use = false;
-        continue;
-      }
-      if (exclude == valhalla::baldr::kEdgeSpeed) {
-        speed = false;
-        continue;
-      }
-      if (exclude == valhalla::baldr::kEdgeTunnel) {
-        tunnel = false;
-        continue;
-      }
-      if (exclude == valhalla::baldr::kEdgeBridge) {
-        bridge = false;
-        continue;
-      }
-      if (exclude == valhalla::baldr::kEdgeTraversability) {
-        traversability = false;
-        continue;
-      }
-      if (exclude == valhalla::baldr::kEdgeSurface) {
-        surface = false;
-        continue;
+
+      if (excludes.find(p.second) != includes.end()) {
+        p.first = false;
       }
     }
   }
@@ -98,12 +64,14 @@ struct AttributeFilter {
   bool bridge{false};
   bool traversability{false};
   bool surface{false};
+  bool density{false};
+  bool urban{false};
 };
 
 OGRLineString* ConvertToOGRLineString(const std::vector<PointLL>& points) {
   OGRLineString* line = new OGRLineString();
   for (const auto& pt : points) {
-    line->addPoint(pt.lng(), pt.lat()); // Note: OGR uses (X=lon, Y=lat)
+    line->addPoint(pt.lng(), pt.lat());
   }
   return line;
 }
@@ -177,6 +145,16 @@ void export_tile(valhalla::baldr::GraphReader& reader,
     edges_layer->CreateField(&field_name);
   }
 
+  if (filter.density) {
+    OGRFieldDefn field_name("density", OFTInteger);
+    edges_layer->CreateField(&field_name);
+  }
+
+  if (filter.urban) {
+    OGRFieldDefn field_name("urban", OFTInteger);
+    edges_layer->CreateField(&field_name);
+  }
+
   if ((edges && !edges_layer) || (nodes && !nodes_layer)) {
     LOG_ERROR("Failed to create layer.");
     GDALClose(dataset);
@@ -215,6 +193,12 @@ void export_tile(valhalla::baldr::GraphReader& reader,
       feature->SetField("road_class",
                         valhalla::baldr::to_string(de->classification())
                             .c_str());
+    }
+    if (filter.density) {
+      feature->SetField("density", static_cast<int>(de->density()));
+    }
+    if (filter.urban) {
+      feature->SetField("urban", static_cast<int>(de->density() > 8));
     }
     if (edges_layer->CreateFeature(feature) != OGRERR_NONE) {
       LOG_ERROR("Failed to create feature");
@@ -424,7 +408,7 @@ int main(int argc, char** argv) {
     // register gdal drivers
     GDALAllRegister();
 
-    AttributeFilter filter(includes, excludes);
+    AttributeFilter filter(std::move(includes), std::move(excludes));
     valhalla::sif::cost_ptr_t costing = create_costing(costing_str);
     return export_tiles(pt, output_dir, edges, nodes, request, costing,
                         filter, tile_ids);
