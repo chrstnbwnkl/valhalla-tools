@@ -27,10 +27,16 @@ set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ language version to use (default is 
 pkg_check_modules(libprime_server IMPORTED_TARGET libprime_server>=0.6.3)
 pkg_check_modules(libvalhalla REQUIRED IMPORTED_TARGET libvalhalla>=3.4.0)
 
+# GDAL 
+  find_package(GDAL)
+  if (GDAL_FOUND)
+    set(GDAL_TARGET GDAL::GDAL)
+  endif()
+
 find_package(Boost CONFIG)
 target_compile_definitions(PkgConfig::libvalhalla INTERFACE ENABLE_DATA_TOOLS)
 
-set(programs valhalla_remove_predicted_traffic valhalla_decode_buckets)
+set(programs valhalla_remove_predicted_traffic valhalla_decode_buckets valhalla_get_tile_ids valhalla_export_tiles)
 set(lib_sources traffic.cc)
 list(TRANSFORM lib_sources PREPEND ${CMAKE_SOURCE_DIR}/src/)
 
@@ -45,10 +51,11 @@ target_include_directories(${lib} PUBLIC
 
 foreach(program_ ${programs})
   add_executable(${program_} ${CMAKE_SOURCE_DIR}/src/${program_}.cc)
-  target_link_libraries(${program_} PRIVATE PkgConfig::libvalhalla Boost::boost ${lib})
+  target_link_libraries(${program_} PRIVATE PkgConfig::libvalhalla Boost::boost GDAL::GDAL ${lib})
   target_include_directories(${program_} 
   PRIVATE 
     PkgConfig::libvalhalla 
+    GDAL::GDAL
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cxxopts/include)
 endforeach()
 
