@@ -122,6 +122,18 @@ void export_tile(valhalla::baldr::GraphReader& reader,
     return;
   }
 
+  // now go through the tile and convert the features
+  if (!reader.DoesTileExist(tile_id)) {
+    LOG_ERROR("Tile " + std::to_string(tile_id) +
+              " does not exist. Skipping...");
+    GDALClose(dataset);
+    return;
+  }
+  // Trim reader if over-committed
+  if (reader.OverCommitted()) {
+    reader.Trim();
+  }
+
   OGRSpatialReference spatialRef;
   spatialRef.SetWellKnownGeogCS("WGS84");
 
@@ -161,17 +173,6 @@ void export_tile(valhalla::baldr::GraphReader& reader,
     return;
   }
 
-  // now go through the tile and convert the features
-  if (!reader.DoesTileExist(tile_id)) {
-    LOG_ERROR("Tile " + std::to_string(tile_id) +
-              " does not exist. Skipping...");
-    return;
-  }
-  // Trim reader if over-committed
-  if (reader.OverCommitted()) {
-    reader.Trim();
-  }
-
   auto tile = reader.GetGraphTile(tile_id);
 
   for (size_t idx = 0; idx < tile->header()->directededgecount(); ++idx) {
@@ -184,7 +185,8 @@ void export_tile(valhalla::baldr::GraphReader& reader,
     OGRLineString* line = ConvertToOGRLineString(shape);
     OGRFeature* feature =
         OGRFeature::CreateFeature(edges_layer->GetLayerDefn());
-    feature->SetGeometry(line);
+    feature->SetGeometryDirectly(
+        line); // valhalla edge shapes are good right? right?
 
     if (filter.localidx) {
       feature->SetField("edgeid", static_cast<int>(idx));
