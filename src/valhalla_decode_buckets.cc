@@ -1,14 +1,27 @@
 #include <cxxopts.hpp>
+#include <iomanip>
 #include <iostream>
 #include <valhalla/baldr/predictedspeeds.h>
 
 namespace {
+
+inline constexpr std::array<const char[4], 7> days_of_week{
+    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
+};
+
+inline constexpr uint32_t kBucketsPerDay = 288;
 void print_bucket_speeds(const std::string& encoded) {
   std::array<int16_t, 200> coefs =
       valhalla::baldr::decode_compressed_speeds(encoded);
   for (size_t i = 0; i < valhalla::baldr::kBucketsPerWeek; ++i) {
+    auto day = i / kBucketsPerDay;
+    auto minutes_of_day = i % kBucketsPerDay * 5;
+    auto hour = minutes_of_day / 60;
+    auto minutes = minutes_of_day % 60;
     auto speed = valhalla::baldr::decompress_speed_bucket(&coefs[0], i);
-    std::cout << i << "," << speed << "\n";
+    std::cout << days_of_week[day] << " " << std::setw(2)
+              << std::setfill('0') << hour << ":" << std::setw(2)
+              << std::setfill('0') << minutes << " " << speed << "\n";
   }
 }
 } // namespace
