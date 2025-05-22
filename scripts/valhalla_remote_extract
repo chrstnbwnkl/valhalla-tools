@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+
+import sys 
+import os
+import struct 
+import subprocess
+from pathlib import Path
+from typing import List
+
+LEVEL_BITS = 3
+TILE_INDEX_BITS = 22
+ID_INDEX_BITS = 21
+LEVEL_MASK = (2 ** LEVEL_BITS) - 1
+TILE_INDEX_MASK = (2 ** TILE_INDEX_BITS) - 1
+TILE_LEVEL_INDEX_MASK = (2 ** (LEVEL_BITS + TILE_INDEX_BITS)) - 1
+ID_INDEX_MASK = (2 ** ID_INDEX_BITS) - 1
+TAR_PATH_LENGTHS = [6, 6, 9]
+
+
+def get_tile_level_id(path: str) -> List[str]:
+    """Returns both level and tile ID given a relative tile path"""
+    return path[:-4].split('/', 1)
+
+def get_level(value: int) -> int:
+    """Returns the hierarchy level [0,2]"""
+    return value & LEVEL_MASK
+
+def get_tile_id_from_int(value: int) -> int:
+    """Returns the tile id without level info"""
+    return (value >> LEVEL_BITS) & TILE_INDEX_MASK
+
+def get_tile_id(path: str) -> int:
+    """Turns a tile path into a numeric GraphId, including the level"""
+    level, idx = get_tile_level_id(path)
+    print(f"{level}, {idx}")
+    return int(level) | (int(idx.replace('/', '')) << 3)
+
+def to_graphid(s: str): 
+    """Turns a string representation of a Graph ID into its 64 bit value"""
+    level, tile, id = [int(x) for x in s.split("/")]
+    return (id << 25) | (tile << 3) | (level & 3)
+
+def get_tarname_from_level_id(level_tile_id: int):
+    """Returns the full path"""
+    level = get_level(level_tile_id)
+    tile_id = get_tile_id_from_int(level_tile_id)
+    tar_path = (
+        str(level)
+        + "{:,}".format(int(pow(10, TAR_PATH_LENGTHS[level])) + tile_id).replace(",", os.sep)[1:]
+    )
+
+    return tar_path
+
+def read_remote_chunk(host, remote_path, offset, length, block_size=4096):
+
+    # aligned sizes in blocks 
+    start_blocks = offset // block_size
+    end_blocks = (offset + length + block_size - 1) // block_size
+    length_blocks = end_blocks - start_blocks
+
+    # aligned sizes in bytes
+    aligned_offset = start_blocks * block_size
+    aligned_length = length_blocks * block_size 
+
+    ssh_cmd = [
+        "ssh", "-p23",  host,
+        f"dd if={remote_path} bs={block_size} skip={start_blocks} count={length_blocks} status=none"
+    ]
+
+    if __debug__:
+        print(f"Reading chunk with offset {start_blocks}, length {length_blocks}, block_size {block_size}")
+        print(f"Reading from {offset - aligned_offset} to {offset - aligned_offset + length}")
+
+    result = subprocess.run(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    return result.stdout[offset - aligned_offset:offset - aligned_offset + length]
+
+
+def read_index(ssh_host, remote_fp): 
+    raw = read_remote_chunk(ssh_host, remote_fp, 124, 12)
+    size_bytes = raw.rstrip(b"\0").decode("ascii")
+    size =  int(size_bytes, 8) if len(size_bytes) else 0
+    raw_index = read_remote_chunk(ssh_host, remote_fp, 512, size)
+
+    index = dict()
+    for offset, tile_id, tile_size in struct.iter_unpack("<QLL", raw_index):
+        index[int(tile_id)] = (offset, tile_size)
+    
+    return index
+
+def main(ssh_host, remote_fp, output_fp):
+    """
+    Expects a newline separated list of stringified tile ids (<level>/<tile>/0) and 
+    downloads those tiles via ssh from a tile extract.
+
+    args: 
+      - ssh host 
+      - absolute path to tile extract on remote server 
+      - directory to store downloaded tiles into
+
+    usage on the command line: 
+
+    valhalla_get_tile_ids -b 6.813941,50.814591,7.286315,51.113854 | ./valhalla_remote_extract "u454386@u454386.your-storagebox.de" "/home/solvertech/valhalla_tiles_250502.tar" test_tiles 
+
+    """
+    # first read the desired tile IDs from stdin
+    tile_ids = []
+    tile_paths = []
+    for line in sys.stdin:
+        try: 
+            id_ = to_graphid(line)
+            tile_ids.append(id_)
+            tile_paths.append(get_tarname_from_level_id(id_))
+        except Exception as e: 
+            print(f"ERROR: invalid tile ID {line}: {e}")
+            return
+
+    # then get the size of the index file
+    index = read_index(ssh_host, remote_fp)
+
+    # now just go over the tile ids, get their offset and size and download that stuff!
+    output_dir = Path(output_fp)
+    output_dir.mkdir(exist_ok=True)
+
+    for i, tile_id in enumerate(tile_ids): 
+        if index.get(tile_id) is None:
+            print(f"ERROR: tile ID {tile_id} not found in index")
+            return
+        offset, tile_size = index[tile_id]
+        print(f"INFO: downloading tile {tile_id} ({tile_size} bytes)")
+        raw_tile = read_remote_chunk(ssh_host, remote_fp, offset, tile_size)
+        path = Path(output_fp) / Path(tile_paths[i])
+        path.mkdir(exist_ok=True, parents=True) 
+        with path.with_suffix(".gph").open("wb") as fh: 
+            fh.write(raw_tile)
+
+        print(f"Written tile {tile_id} to {str(path)}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1],sys.argv[2], sys.argv[3])

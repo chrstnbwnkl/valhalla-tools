@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.12 FATAL_ERROR)
 project(valhalla_tools LANGUAGES CXX C)
 
+include(GNUInstallDirs)
+
 if(NOT MSVC_IDE) 
   if(NOT CMAKE_BUILD_TYPE)
     message(STATUS "No build type specified, defaulting to Release")
@@ -60,6 +62,15 @@ foreach(program_ ${programs})
 endforeach()
 
 
+install(TARGETS ${programs} DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT runtime)
 
+# scripts 
+configure_file(scripts/valhalla_remote_extract ${CMAKE_BINARY_DIR}/valhalla_remote_extract COPYONLY)
+install(FILES scripts/valhalla_remote_extract DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  PERMISSIONS
+      OWNER_READ OWNER_WRITE OWNER_EXECUTE
+      GROUP_READ GROUP_EXECUTE
+      WORLD_READ WORLD_EXECUTE
+      COMPONENT runtime
+  )
 
-install(TARGETS ${programs}  DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT runtime)
