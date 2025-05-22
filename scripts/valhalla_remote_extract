@@ -99,7 +99,7 @@ def main(ssh_host, remote_fp, output_fp):
 
     usage on the command line: 
 
-    valhalla_get_tile_ids -b 6.813941,50.814591,7.286315,51.113854 | ./valhalla_remote_extract "u454386@u454386.your-storagebox.de" "/home/solvertech/valhalla_tiles_250502.tar" test_tiles 
+    valhalla_get_tile_ids -b 6.813941,50.814591,7.286315,51.113854 | ./valhalla_remote_extract "root@ssh-host" "/home/valhalla-tiles.tar" test_tiles 
 
     """
     # first read the desired tile IDs from stdin
