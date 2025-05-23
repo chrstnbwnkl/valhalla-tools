@@ -51,7 +51,7 @@ def get_tarname_from_level_id(level_tile_id: int):
 
     return tar_path
 
-def read_remote_chunk(host, remote_path, offset, length, block_size=4096):
+def read_remote_chunk(host, remote_path, offset, length, port="-p23", block_size=4096):
 
     # aligned sizes in blocks 
     start_blocks = offset // block_size
@@ -60,16 +60,11 @@ def read_remote_chunk(host, remote_path, offset, length, block_size=4096):
 
     # aligned sizes in bytes
     aligned_offset = start_blocks * block_size
-    aligned_length = length_blocks * block_size 
 
     ssh_cmd = [
-        "ssh", "-p23",  host,
+        "ssh", port,  host,
         f"dd if={remote_path} bs={block_size} skip={start_blocks} count={length_blocks} status=none"
     ]
-
-    if __debug__:
-        print(f"Reading chunk with offset {start_blocks}, length {length_blocks}, block_size {block_size}")
-        print(f"Reading from {offset - aligned_offset} to {offset - aligned_offset + length}")
 
     result = subprocess.run(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
     return result.stdout[offset - aligned_offset:offset - aligned_offset + length]
@@ -123,8 +118,8 @@ def main(ssh_host, remote_fp, output_fp):
 
     for i, tile_id in enumerate(tile_ids): 
         if index.get(tile_id) is None:
-            print(f"ERROR: tile ID {tile_id} not found in index")
-            return
+            print(f"WARN: tile ID {tile_id} not found in index")
+            continue
         offset, tile_size = index[tile_id]
         print(f"INFO: downloading tile {tile_id} ({tile_size} bytes)")
         raw_tile = read_remote_chunk(ssh_host, remote_fp, offset, tile_size)

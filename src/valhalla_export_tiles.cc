@@ -16,11 +16,13 @@
 
 namespace {
 
-const std::string kEdgeUrban = "edge.urban";
+const std::string kEdgePredictedSpeeds = "edge.predicted_speeds";
 
 struct AttributeFilter {
   AttributeFilter(std::vector<std::string>&& includes_v,
-                  std::vector<std::string>&& excludes_v) {
+                  std::vector<std::string>&& excludes_v,
+                  std::vector<unsigned int>&& predspeedindices) {
+    pred_speed_indices = std::move(predspeedindices);
     std::unordered_set<std::string> includes;
     includes.reserve(includes_v.size());
     for (auto& inc : includes_v) {
@@ -43,6 +45,7 @@ struct AttributeFilter {
         {traversability, kEdgeTraversability},
         {surface, kEdgeSurface},
         {urban, kEdgeIsUrban},
+        {predicted_speeds, kEdgePredictedSpeeds},
     };
 
     for (auto& p : pairs) {
@@ -66,6 +69,8 @@ struct AttributeFilter {
   bool surface{false};
   bool density{false};
   bool urban{false};
+  bool predicted_speeds{false};
+  std::vector<unsigned int> pred_speed_indices{};
 };
 
 OGRLineString* ConvertToOGRLineString(const std::vector<PointLL>& points) {
@@ -167,6 +172,14 @@ void export_tile(valhalla::baldr::GraphReader& reader,
     edges_layer->CreateField(&field_name);
   }
 
+  if (filter.predicted_speeds) {
+    for (const auto& i : filter.pred_speed_indices) {
+      std::string name = "predspeed_" + std::to_string(i);
+      OGRFieldDefn field_name(name.c_str(), OFTInteger);
+      edges_layer->CreateField(&field_name);
+    }
+  }
+
   if ((edges && !edges_layer) || (nodes && !nodes_layer)) {
     LOG_ERROR("Failed to create layer.");
     GDALClose(dataset);
@@ -177,8 +190,8 @@ void export_tile(valhalla::baldr::GraphReader& reader,
 
   for (size_t idx = 0; idx < tile->header()->directededgecount(); ++idx) {
     auto de = tile->directededge(idx);
-    // if (!de->is_shortcut())
-    //   continue;
+    if (de->is_shortcut())
+      continue;
     auto ei = tile->edgeinfo(de);
 
     auto shape = ei.shape();
@@ -201,6 +214,19 @@ void export_tile(valhalla::baldr::GraphReader& reader,
     }
     if (filter.urban) {
       feature->SetField("urban", static_cast<int>(de->density() > 8));
+    }
+    if (filter.predicted_speeds) {
+      for (const auto& i : filter.pred_speed_indices) {
+        std::string field_name = "predspeed_" + std::to_string(i);
+        if (de->has_predicted_speed()) {
+          auto s =
+              tile->GetSpeed(de, valhalla::baldr::kPredictedFlowMask,
+                             i * valhalla::baldr::kSpeedBucketSizeSeconds);
+          feature->SetField(field_name.c_str(), static_cast<int>(s));
+        } else {
+          feature->SetField(field_name.c_str(), static_cast<int>(0));
+        }
+      }
     }
     if (edges_layer->CreateFeature(feature) != OGRERR_NONE) {
       LOG_ERROR("Failed to create feature");
@@ -315,8 +341,10 @@ int main(int argc, char** argv) {
   std::string costing_str;
   std::vector<std::string> includes;
   std::vector<std::string> excludes;
+  std::vector<unsigned int> predicted_speed_indices;
   bool edges = false;
   bool nodes = false;
+  bool complete_graph = false;
 
   try {
     cxxopts::Options
@@ -334,6 +362,8 @@ int main(int argc, char** argv) {
     ("a,include-attributes", "Attributes to include", cxxopts::value<std::vector<std::string>>())
     ("f,feature-type", "Feature types to output (currently supports node and edges, defaults to edges only)", cxxopts::value<std::vector<std::string>>())
     ("d,output-directory", "Directory in which output files will be written", cxxopts::value<std::string>())
+    ("g,complete-graph", "Export the complete graph", cxxopts::value<bool>())
+    ("s,predicted-speed-indices", "Which predicted speed buckets to include, if any", cxxopts::value<std::vector<unsigned int>>())
     ("TILEID", "If provided, only export features matching the passed tile IDs. Can alternatively be passed via stdin", cxxopts::value<std::vector<std::string>>());
     // clang-format on
 
@@ -348,6 +378,19 @@ int main(int argc, char** argv) {
     // try from positional arguments
     if (result["TILEID"].count() != 0) {
       tile_ids = result["TILEID"].as<std::vector<std::string>>();
+    }
+
+    if (result["complete-graph"].count() != 0) {
+      // collect available tiles from graph
+      valhalla::baldr::GraphReader reader(pt.get_child("mjolnir"));
+      for (const auto& tile : reader.GetTileSet()) {
+        tile_ids.push_back(std::to_string(tile));
+      }
+    }
+
+    if (result["predicted-speed-indices"].count() != 0) {
+      predicted_speed_indices = result["predicted-speed-indices"]
+                                    .as<std::vector<unsigned int>>();
     }
 
     // read tile ids from stdin
@@ -410,7 +453,8 @@ int main(int argc, char** argv) {
     // register gdal drivers
     GDALAllRegister();
 
-    AttributeFilter filter(std::move(includes), std::move(excludes));
+    AttributeFilter filter(std::move(includes), std::move(excludes),
+                           std::move(predicted_speed_indices));
     valhalla::sif::cost_ptr_t costing = create_costing(costing_str);
     return export_tiles(pt, output_dir, edges, nodes, request, costing,
                         filter, tile_ids);
