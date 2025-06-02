@@ -38,7 +38,7 @@ pkg_check_modules(libvalhalla REQUIRED IMPORTED_TARGET libvalhalla>=3.4.0)
 find_package(Boost CONFIG)
 target_compile_definitions(PkgConfig::libvalhalla INTERFACE ENABLE_DATA_TOOLS)
 
-set(programs valhalla_remove_predicted_traffic valhalla_decode_buckets valhalla_get_tile_ids valhalla_export_tiles)
+set(programs valhalla_remove_predicted_traffic valhalla_decode_buckets valhalla_get_tile_ids valhalla_export_tiles valhalla_tile_stats)
 set(lib_sources traffic.cc)
 list(TRANSFORM lib_sources PREPEND ${CMAKE_SOURCE_DIR}/src/)
 

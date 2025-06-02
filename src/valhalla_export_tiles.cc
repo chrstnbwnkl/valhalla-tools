@@ -1,5 +1,5 @@
-
 #include <cxxopts.hpp>
+#include <ogr_core.h>
 #include <valhalla/baldr/attributes_controller.h>
 #include <valhalla/baldr/graphid.h>
 #include <valhalla/baldr/graphreader.h>
@@ -21,7 +21,8 @@ const std::string kEdgePredictedSpeeds = "edge.predicted_speeds";
 struct AttributeFilter {
   AttributeFilter(std::vector<std::string>&& includes_v,
                   std::vector<std::string>&& excludes_v,
-                  std::vector<unsigned int>&& predspeedindices) {
+                  std::vector<unsigned int>&& predspeedindices,
+                  bool only_shortcuts) {
     pred_speed_indices = std::move(predspeedindices);
     std::unordered_set<std::string> includes;
     includes.reserve(includes_v.size());
@@ -34,7 +35,7 @@ struct AttributeFilter {
       excludes.insert(std::move(exc));
     }
 
-    std::vector<std::pair<bool&, std::string>> pairs = {
+    std::vector<std::pair<bool&, std::string>> edge_pairs = {
         {localidx, kEdgeId},
         {density, kEdgeDensity},
         {road_class, kEdgeRoadClass},
@@ -46,22 +47,44 @@ struct AttributeFilter {
         {surface, kEdgeSurface},
         {urban, kEdgeIsUrban},
         {predicted_speeds, kEdgePredictedSpeeds},
+        {country_crossing, kEdgeCountryCrossing},
     };
 
-    for (auto& p : pairs) {
+    std::vector<std::pair<bool&, std::string>> node_pairs = {
+        {type, kNodeType},
+    };
+
+    for (auto& p : edge_pairs) {
       if (includes.find(p.second) != includes.end()) {
+        edges = true;
         p.first = true;
       }
 
       if (excludes.find(p.second) != includes.end()) {
+        edges = true;
         p.first = false;
       }
     }
+
+    for (auto& p : node_pairs) {
+      if (includes.find(p.second) != includes.end()) {
+        nodes = true;
+        p.first = true;
+      }
+
+      if (excludes.find(p.second) != includes.end()) {
+        nodes = true;
+        p.first = false;
+      }
+    }
+
+    shortcuts_only = only_shortcuts;
   }
 
-  bool localidx{true};
-  bool road_class{true};
-  bool use{true};
+  // edges
+  bool localidx{false};
+  bool road_class{false};
+  bool use{false};
   bool speed{false};
   bool tunnel{false};
   bool bridge{false};
@@ -69,8 +92,18 @@ struct AttributeFilter {
   bool surface{false};
   bool density{false};
   bool urban{false};
+  bool country_crossing{false};
   bool predicted_speeds{false};
   std::vector<unsigned int> pred_speed_indices{};
+
+  bool shortcuts_only{false};
+
+  // nodes
+  bool type{false};
+
+  // which data sets does the user want
+  bool edges{false};
+  bool nodes{false};
 };
 
 OGRLineString* ConvertToOGRLineString(const std::vector<PointLL>& points) {
@@ -102,28 +135,48 @@ enum class FeatureType : uint8_t { kEdges = 0, kNodes = 1 };
 void export_tile(valhalla::baldr::GraphReader& reader,
                  const valhalla::baldr::GraphId tile_id,
                  const std::string& output_dir,
-                 const bool edges,
-                 const bool nodes,
                  valhalla::Api& request,
                  valhalla::sif::cost_ptr_t costing,
                  GDALDriver* gdal_driver,
                  char** dataset_options,
                  const AttributeFilter& filter) {
   // get the file path
-  auto suffix =
-      valhalla::baldr::GraphTile::FileSuffix(tile_id.Tile_Base(), ".fgb");
-  auto disk_location =
-      output_dir + filesystem::path::preferred_separator + suffix;
+  auto edge_suffix =
+      valhalla::baldr::GraphTile::FileSuffix(tile_id.Tile_Base(),
+                                             "_edges.fgb");
+  auto node_suffix =
+      valhalla::baldr::GraphTile::FileSuffix(tile_id.Tile_Base(),
+                                             "_nodes.fgb");
+  auto edge_location =
+      output_dir + filesystem::path::preferred_separator + edge_suffix;
+  auto node_location =
+      output_dir + filesystem::path::preferred_separator + node_suffix;
 
   // make sure all the subdirectories exist
-  auto dir = filesystem::path(disk_location);
+  auto dir = filesystem::path(edge_location);
   dir.replace_filename("");
   filesystem::create_directories(dir);
-  LOG_INFO("Writing to disk at " + disk_location);
-  GDALDataset* dataset = gdal_driver->Create(disk_location.c_str(), 0, 0,
-                                             0, GDT_Unknown, nullptr);
-  if (!dataset) {
-    printf("Failed to create output file.\n");
+  GDALDataset* edge_data = nullptr;
+  GDALDataset* node_data = nullptr;
+
+  if (filter.edges) {
+    LOG_INFO("Writing edges to disk at " + edge_location);
+    edge_data = gdal_driver->Create(edge_location.c_str(), 0, 0, 0,
+                                    GDT_Unknown, nullptr);
+  } else {
+    LOG_INFO("No edges will be written");
+  }
+
+  if (filter.nodes) {
+    LOG_INFO("Writing edges to disk at " + node_location);
+    node_data = gdal_driver->Create(node_location.c_str(), 0, 0, 0,
+                                    GDT_Unknown, nullptr);
+  } else {
+    LOG_INFO("No nodes will be written");
+  }
+
+  if (!edge_data && !node_data) {
+    LOG_INFO("No attributes specified, skipping export");
     return;
   }
 
@@ -131,7 +184,10 @@ void export_tile(valhalla::baldr::GraphReader& reader,
   if (!reader.DoesTileExist(tile_id)) {
     LOG_ERROR("Tile " + std::to_string(tile_id) +
               " does not exist. Skipping...");
-    GDALClose(dataset);
+    if (edge_data)
+      GDALClose(edge_data);
+    if (node_data)
+      GDALClose(node_data);
     return;
   }
   // Trim reader if over-committed
@@ -144,13 +200,13 @@ void export_tile(valhalla::baldr::GraphReader& reader,
 
   OGRLayer* edges_layer;
   OGRLayer* nodes_layer;
-  if (edges)
-    edges_layer = dataset->CreateLayer("edges", &spatialRef, wkbLineString,
-                                       dataset_options);
+  if (edge_data)
+    edges_layer = edge_data->CreateLayer("edges", &spatialRef,
+                                         wkbLineString, dataset_options);
 
-  if (nodes)
-    nodes_layer = dataset->CreateLayer("nodes", &spatialRef, wkbPoint,
-                                       dataset_options);
+  if (node_data)
+    nodes_layer = node_data->CreateLayer("nodes", &spatialRef, wkbPoint,
+                                         dataset_options);
 
   // create fields
   if (filter.localidx) {
@@ -172,6 +228,11 @@ void export_tile(valhalla::baldr::GraphReader& reader,
     edges_layer->CreateField(&field_name);
   }
 
+  if (filter.country_crossing) {
+    OGRFieldDefn field_name("country_crossing", OFTInteger);
+    edges_layer->CreateField(&field_name);
+  }
+
   if (filter.predicted_speeds) {
     for (const auto& i : filter.pred_speed_indices) {
       std::string name = "predspeed_" + std::to_string(i);
@@ -180,18 +241,50 @@ void export_tile(valhalla::baldr::GraphReader& reader,
     }
   }
 
-  if ((edges && !edges_layer) || (nodes && !nodes_layer)) {
-    LOG_ERROR("Failed to create layer.");
-    GDALClose(dataset);
-    return;
+  if (filter.type) {
+    OGRFieldDefn field_name("type", OFTString);
+    nodes_layer->CreateField(&field_name);
   }
 
   auto tile = reader.GetGraphTile(tile_id);
 
+  GraphId nodeid = tile_id;
+
+  // export nodes
+  for (size_t idx = 0; idx < tile->header()->nodecount();
+       ++idx, nodeid++) {
+    auto ni = tile->node(idx);
+    if (!costing->Allowed(ni))
+      continue;
+    auto ll = tile->get_node_ll(nodeid);
+    OGRFeature* feature =
+        OGRFeature::CreateFeature(nodes_layer->GetLayerDefn());
+    auto point = new OGRPoint();
+    point->setX(ll.lng());
+    point->setY(ll.lat());
+    feature->SetGeometryDirectly(point);
+
+    if (filter.type) {
+      feature->SetField("type",
+                        valhalla::baldr::to_string(ni->type()).c_str());
+    }
+    if (nodes_layer->CreateFeature(feature) != OGRERR_NONE) {
+      LOG_ERROR("Failed to create feature");
+    }
+
+    OGRFeature::DestroyFeature(feature);
+  }
+
+  // export edges
   for (size_t idx = 0; idx < tile->header()->directededgecount(); ++idx) {
     auto de = tile->directededge(idx);
-    if (de->is_shortcut())
+    if ((!filter.shortcuts_only && de->is_shortcut()) ||
+        (filter.shortcuts_only && !de->is_shortcut()))
       continue;
+
+    if (!costing->Allowed(de, tile, valhalla::sif::kDisallowNone))
+      continue;
+
     auto ei = tile->edgeinfo(de);
 
     auto shape = ei.shape();
@@ -215,14 +308,25 @@ void export_tile(valhalla::baldr::GraphReader& reader,
     if (filter.urban) {
       feature->SetField("urban", static_cast<int>(de->density() > 8));
     }
+    if (filter.country_crossing) {
+      feature->SetField("country_crossing",
+                        static_cast<int>(de->ctry_crossing()));
+    }
     if (filter.predicted_speeds) {
       for (const auto& i : filter.pred_speed_indices) {
         std::string field_name = "predspeed_" + std::to_string(i);
         if (de->has_predicted_speed()) {
+          uint8_t sources = 0;
           auto s =
               tile->GetSpeed(de, valhalla::baldr::kPredictedFlowMask,
-                             i * valhalla::baldr::kSpeedBucketSizeSeconds);
-          feature->SetField(field_name.c_str(), static_cast<int>(s));
+                             i * valhalla::baldr::kSpeedBucketSizeSeconds,
+                             costing->is_hgv(), &sources);
+          if (sources & valhalla::baldr::kPredictedFlowMask) {
+            feature->SetField(field_name.c_str(), static_cast<int>(s));
+
+          } else {
+            feature->SetField(field_name.c_str(), static_cast<int>(0));
+          }
         } else {
           feature->SetField(field_name.c_str(), static_cast<int>(0));
         }
@@ -235,19 +339,20 @@ void export_tile(valhalla::baldr::GraphReader& reader,
     OGRFeature::DestroyFeature(feature);
   }
 
-  GDALClose(dataset);
+  if (edge_data)
+    GDALClose(edge_data);
+
+  if (node_data)
+    GDALClose(node_data);
 };
 
 void work(boost::property_tree::ptree& config,
           const std::string& output_dir,
-          bool edges,
-          bool nodes,
           valhalla::Api& request,
           valhalla::sif::cost_ptr_t costing,
           const AttributeFilter& filter,
           std::queue<valhalla::baldr::GraphId>& tile_queue,
           std::mutex& lock) {
-
   valhalla::baldr::GraphReader reader(config.get_child("mjolnir"));
   valhalla::baldr::GraphId tile_id;
   const char* driver_name = "FlatGeobuf";
@@ -270,8 +375,8 @@ void work(boost::property_tree::ptree& config,
       tile_id = tile_queue.front();
       tile_queue.pop();
     }
-    export_tile(reader, tile_id, output_dir, edges, nodes, request,
-                costing, driver, dataset_options, filter);
+    export_tile(reader, tile_id, output_dir, request, costing, driver,
+                dataset_options, filter);
   }
 }
 
@@ -282,8 +387,6 @@ void work(boost::property_tree::ptree& config,
  * @param config the config object
  * @param output_dir the directory to which the files will be written
  * (follows graph tile structuring within the directory)
- * @param edges whether to export edges
- * @param nodes whether to export nodes
  * @param request some request options, right now only used for the costing
  * and attribute controlling
  * @param costing the costing to filter allowed/disallowed edges
@@ -292,8 +395,6 @@ void work(boost::property_tree::ptree& config,
  */
 int export_tiles(boost::property_tree::ptree& config,
                  const std::string& output_dir,
-                 const bool edges,
-                 const bool nodes,
                  valhalla::Api& request,
                  valhalla::sif::cost_ptr_t costing,
                  const AttributeFilter& filter,
@@ -303,7 +404,12 @@ int export_tiles(boost::property_tree::ptree& config,
 
   // fill up a queue
   for (const auto& tile_id : tile_ids) {
-    tile_queue.emplace(tile_id);
+    try {
+      tile_queue.push(GraphId(tile_id));
+    } catch (std::exception& e) {
+      LOG_ERROR("Error converting tile ID: " + tile_id);
+      throw e;
+    }
   }
   // no need for this anymore
   tile_ids.resize(0);
@@ -315,13 +421,12 @@ int export_tiles(boost::property_tree::ptree& config,
   std::mutex lock;
 
   for (size_t i = 0; i < threads.size(); ++i) {
-    threads[i] =
-        std::make_shared<std::thread>(work, std::ref(config),
-                                      std::cref(output_dir), edges, nodes,
-                                      std::ref(request), costing,
-                                      std::cref(filter),
-                                      std::ref(tile_queue),
-                                      std::ref(lock));
+    threads[i] = std::make_shared<std::thread>(work, std::ref(config),
+                                               std::cref(output_dir),
+                                               std::ref(request), costing,
+                                               std::cref(filter),
+                                               std::ref(tile_queue),
+                                               std::ref(lock));
   }
 
   for (const auto& thread : threads)
@@ -336,14 +441,12 @@ int main(int argc, char** argv) {
   boost::property_tree::ptree pt;
   std::vector<std::string> tile_ids;
   std::string output_dir;
-  std::vector<std::string> ftypes = {"edges"};
   valhalla::Api request;
   std::string costing_str;
   std::vector<std::string> includes;
   std::vector<std::string> excludes;
   std::vector<unsigned int> predicted_speed_indices;
-  bool edges = false;
-  bool nodes = false;
+  bool shortcuts_only = false;
   bool complete_graph = false;
 
   try {
@@ -360,10 +463,11 @@ int main(int argc, char** argv) {
     ("o,costing", "Costing to use", cxxopts::value<std::string>())
     ("e,exclude-attributes", "Attributes to exclude", cxxopts::value<std::vector<std::string>>())
     ("a,include-attributes", "Attributes to include", cxxopts::value<std::vector<std::string>>())
-    ("f,feature-type", "Feature types to output (currently supports node and edges, defaults to edges only)", cxxopts::value<std::vector<std::string>>())
     ("d,output-directory", "Directory in which output files will be written", cxxopts::value<std::string>())
     ("g,complete-graph", "Export the complete graph", cxxopts::value<bool>())
-    ("s,predicted-speed-indices", "Which predicted speed buckets to include, if any", cxxopts::value<std::vector<unsigned int>>())
+    ("ss,predicted-speed-index-start", "At which bucket index to start exporting predicted speeds", cxxopts::value<unsigned int>())
+    ("se,predicted-speed-index-end", "At which bucket index to end exporting predicted speeds", cxxopts::value<unsigned int>())
+    ("t,shortcuts-only", "Whether to only output shortcut edges", cxxopts::value<bool>())
     ("TILEID", "If provided, only export features matching the passed tile IDs. Can alternatively be passed via stdin", cxxopts::value<std::vector<std::string>>());
     // clang-format on
 
@@ -380,6 +484,10 @@ int main(int argc, char** argv) {
       tile_ids = result["TILEID"].as<std::vector<std::string>>();
     }
 
+    if (result["shortcuts-only"].count() != 0) {
+      shortcuts_only = true;
+    }
+
     if (result["complete-graph"].count() != 0) {
       // collect available tiles from graph
       valhalla::baldr::GraphReader reader(pt.get_child("mjolnir"));
@@ -388,9 +496,15 @@ int main(int argc, char** argv) {
       }
     }
 
-    if (result["predicted-speed-indices"].count() != 0) {
-      predicted_speed_indices = result["predicted-speed-indices"]
-                                    .as<std::vector<unsigned int>>();
+    if ((result["predicted-speed-index-start"].count() != 0) &&
+        (result["predicted-speed-index-end"].count() != 0)) {
+      auto start =
+          result["predicted-speed-index-start"].as<unsigned int>();
+      auto end = result["predicted-speed-index-end"].as<unsigned int>();
+
+      for (unsigned int i = start; i <= end; ++i) {
+        predicted_speed_indices.push_back(i);
+      }
     }
 
     // read tile ids from stdin
@@ -411,21 +525,6 @@ int main(int argc, char** argv) {
       output_dir = result["output-directory"].as<std::string>();
     } else {
       throw cxxopts::exceptions::missing_argument("output-dir");
-    }
-
-    if (result["feature-type"].count() > 0) {
-      ftypes = result["feature-type"].as<std::vector<std::string>>();
-    } else {
-      LOG_INFO("No feature-type argument detected, defaulting to edges");
-    }
-    for (const auto& ftype : ftypes) {
-      if (ftype == "edges") {
-        edges = true;
-      } else if (ftype == "nodes") {
-        nodes = true;
-      } else {
-        LOG_WARN("Detected unsupported feature-type " + ftype);
-      }
     }
 
     if (result["include-attributes"].count() > 0) {
@@ -454,10 +553,11 @@ int main(int argc, char** argv) {
     GDALAllRegister();
 
     AttributeFilter filter(std::move(includes), std::move(excludes),
-                           std::move(predicted_speed_indices));
+                           std::move(predicted_speed_indices),
+                           shortcuts_only);
     valhalla::sif::cost_ptr_t costing = create_costing(costing_str);
-    return export_tiles(pt, output_dir, edges, nodes, request, costing,
-                        filter, tile_ids);
+    return export_tiles(pt, output_dir, request, costing, filter,
+                        tile_ids);
   } catch (std::exception& e) {
     std::cout << "Failed to export tiles: " << e.what() << "\n";
     return EXIT_FAILURE;
