@@ -19,12 +19,10 @@ else()
 endif()
 
 # some options
-set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ language version to use (default is 17)")
+set(CMAKE_CXX_STANDARD 20 CACHE STRING "C++ language version to use (default is 20)")
 set(LOGGING_LEVEL "INFO" CACHE STRING "Logging level, default is INFO")
 
 include(FindPkgConfig)
-
-set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ language version to use (default is 17)")
 
 pkg_check_modules(libprime_server IMPORTED_TARGET libprime_server>=0.6.3)
 pkg_check_modules(libvalhalla REQUIRED IMPORTED_TARGET libvalhalla>=3.4.0)
@@ -54,7 +52,7 @@ function(add_tool)
 endfunction()
 
 set(programs valhalla_remove_predicted_traffic valhalla_decode_buckets valhalla_get_tile_ids valhalla_export_tiles valhalla_tile_stats)
-set(lib_sources traffic.cc)
+set(lib_sources traffic.cc rest.cc)
 list(TRANSFORM lib_sources PREPEND ${CMAKE_SOURCE_DIR}/src/)
 
 # lib
@@ -70,6 +68,7 @@ add_tool(
   NAME valhalla_remove_predicted_traffic 
   DEPENDS
     PkgConfig::libvalhalla 
+    PkgConfig::libprime_server 
     ${lib}
 )
 
@@ -93,6 +92,17 @@ add_tool(
   DEPENDS
     PkgConfig::libvalhalla 
     GDAL::GDAL 
+)
+
+add_tool(
+  NAME valhalla_rest 
+  INCLUDE_DIRECTORIES
+  PUBLIC 
+      ${CMAKE_SOURCE_DIR}/third_party/rapidjson/include
+  DEPENDS
+    PkgConfig::libvalhalla 
+    PkgConfig::libprime_server 
+    ${lib}
 )
 
 # scripts 
