@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <cxxopts.hpp>
 #include <ogr_core.h>
+#include <queue>
 #include <valhalla/baldr/attributes_controller.h>
 #include <valhalla/baldr/directededge.h>
 #include <valhalla/baldr/graphid.h>
