@@ -74,6 +74,10 @@ You can use this tool together with `valhalla_get_tile_ids` by piping its output
 valhalla_get_tile_ids -b 6.771468,50.761637,7.073568,51.051745 | valhalla_export_tiles -c valhalla.json -o auto -e edge.is_urban -e edge.use -d output  -j14
 ```
 
+...or pass the `-g` flag to export everything in the tile set pointed to by the config. 
+
+You can also pass a search filter loki style: `-f/--search_filter '{"min_road_class": "trunk"}'`
+
 Thanks to the power of GDAL, this little program is pretty fast: on my 64GB RAM laptop with 16 logical cores, it spits out all edges in
 Germany (~12GB) in 16 seconds and Europe (~70GB) in less than two minutes.
 

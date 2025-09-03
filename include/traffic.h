@@ -1,5 +1,6 @@
 #pragma once
 
+#include <boost/property_tree/ptree.hpp>
 #include <valhalla/mjolnir/graphtilebuilder.h>
 
 namespace valhalla {
@@ -7,8 +8,9 @@ namespace valhalla {
 namespace tools {
 
 /**
- * @brief Removes predicted traffic information (predicted speeds, freeflow and constrained speeds)
- * from tiles. Only works on the tile directory, no the tile extract.
+ * @brief Removes predicted traffic information (predicted speeds, freeflow
+ * and constrained speeds) from tiles. Only works on the tile directory, no
+ * the tile extract.
  *
  * @param pt the valhalla configuration
  */
