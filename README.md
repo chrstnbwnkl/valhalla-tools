@@ -5,6 +5,19 @@ repo. Use at your own risk, the API might change any time. Contributions are fin
 
 ### CLI tools
 
+## `valhalla_rest`
+
+```sh
+Usage: 
+    valhalla_rest is a dead simple HTTP server that serves objects from a Valhalla graphs via a REST API. [OPTION...] 
+    -h, --help Print this help message. 
+    -c, --config arg Path to the configuration file 
+    -i, --inline-config arg Inline JSON config 
+    -p, --port arg Port to listen to (default: 8004)
+```
+
+Requests look like this: `GET localhost:8400/edge/<full 64-bit id>`. Currently only supports edges.
+
 ## `valhalla_remove_predicted_traffic`
 
 ```sh
