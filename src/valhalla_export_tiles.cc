@@ -1,14 +1,20 @@
+#include <cstdlib>
 #include <cxxopts.hpp>
 #include <ogr_core.h>
 #include <valhalla/baldr/attributes_controller.h>
+#include <valhalla/baldr/directededge.h>
 #include <valhalla/baldr/graphid.h>
 #include <valhalla/baldr/graphreader.h>
+#include <valhalla/baldr/graphtileptr.h>
+#include <valhalla/baldr/pathlocation.h>
+#include <valhalla/baldr/rapidjson_utils.h>
 #include <valhalla/mjolnir/graphtilebuilder.h>
 #include <valhalla/proto/api.pb.h>
 #include <valhalla/proto/options.pb.h>
 #include <valhalla/proto_conversions.h>
 #include <valhalla/sif/costfactory.h>
 #include <valhalla/sif/dynamiccost.h>
+#include <valhalla/third_party/rapidjson/document.h>
 
 #include "argparse_utils.h"
 #include <gdal_priv.h>
@@ -19,10 +25,15 @@ namespace {
 const std::string kEdgePredictedSpeeds = "edge.predicted_speeds";
 
 struct AttributeFilter {
-  AttributeFilter(std::vector<std::string>&& includes_v,
-                  std::vector<std::string>&& excludes_v,
-                  std::vector<unsigned int>&& predspeedindices,
-                  bool only_shortcuts) {
+  AttributeFilter(
+      std::vector<std::string>&& includes_v,
+      std::vector<std::string>&& excludes_v,
+      std::vector<unsigned int>&& predspeedindices,
+      valhalla::baldr::PathLocation::SearchFilter& searchfilter,
+      bool only_shortcuts) {
+
+    search_filter = searchfilter;
+
     pred_speed_indices = std::move(predspeedindices);
     std::unordered_set<std::string> includes;
     includes.reserve(includes_v.size());
@@ -81,6 +92,39 @@ struct AttributeFilter {
     shortcuts_only = only_shortcuts;
   }
 
+  /**
+   * Taken from upstream valhalla (src/loki/search.cc)
+   */
+  bool is_filtered(const DirectedEdge* de,
+                   graph_tile_ptr tile,
+                   valhalla::sif::cost_ptr_t costing) const {
+    // check if this edge matches any of the exclusion filters
+    uint32_t road_class = static_cast<uint32_t>(de->classification());
+    uint32_t min_road_class =
+        static_cast<uint32_t>(search_filter.min_road_class_);
+    uint32_t max_road_class =
+        static_cast<uint32_t>(search_filter.max_road_class_);
+
+    // Note that min_ and max_road_class are integers where, by default,
+    // max_road_class is 0 and min_road_class is 7. This filter rejects
+    // roads where the functional road class is outside of the min to max
+    // range.
+    return (road_class > min_road_class || road_class < max_road_class) ||
+           (search_filter.exclude_tunnel_ && de->tunnel()) ||
+           (search_filter.exclude_bridge_ && de->bridge()) ||
+           (search_filter.exclude_toll_ && de->toll()) ||
+           (search_filter.exclude_ramp_ && (de->use() == Use::kRamp)) ||
+           (search_filter.exclude_ferry_ &&
+            (de->use() == Use::kFerry || de->use() == Use::kRailFerry)) ||
+           (search_filter.exclude_closures_ &&
+            (costing->flow_mask() & kCurrentFlowMask) &&
+            tile->IsClosed(de)) ||
+           (search_filter.level_ != kMaxLevel &&
+            !tile->edgeinfo(de).includes_level(search_filter.level_));
+  }
+
+  valhalla::baldr::PathLocation::SearchFilter search_filter;
+
   // edges
   bool localidx{false};
   bool road_class{false};
@@ -135,7 +179,7 @@ enum class FeatureType : uint8_t { kEdges = 0, kNodes = 1 };
 void export_tile(valhalla::baldr::GraphReader& reader,
                  const valhalla::baldr::GraphId tile_id,
                  const std::string& output_dir,
-                 valhalla::Api& request,
+                 const std::string& file_suffix,
                  valhalla::sif::cost_ptr_t costing,
                  GDALDriver* gdal_driver,
                  char** dataset_options,
@@ -143,10 +187,12 @@ void export_tile(valhalla::baldr::GraphReader& reader,
   // get the file path
   auto edge_suffix =
       valhalla::baldr::GraphTile::FileSuffix(tile_id.Tile_Base(),
-                                             "_edges.fgb");
+                                             "_edges" + file_suffix +
+                                                 ".fgb");
   auto node_suffix =
       valhalla::baldr::GraphTile::FileSuffix(tile_id.Tile_Base(),
-                                             "_nodes.fgb");
+                                             "_nodes" + file_suffix +
+                                                 ".fgb");
   auto edge_location =
       output_dir + filesystem::path::preferred_separator + edge_suffix;
   auto node_location =
@@ -250,39 +296,48 @@ void export_tile(valhalla::baldr::GraphReader& reader,
 
   GraphId nodeid = tile_id;
 
-  // export nodes
-  for (size_t idx = 0; idx < tile->header()->nodecount();
-       ++idx, nodeid++) {
-    auto ni = tile->node(idx);
-    if (!costing->Allowed(ni))
-      continue;
-    auto ll = tile->get_node_ll(nodeid);
-    OGRFeature* feature =
-        OGRFeature::CreateFeature(nodes_layer->GetLayerDefn());
-    auto point = new OGRPoint();
-    point->setX(ll.lng());
-    point->setY(ll.lat());
-    feature->SetGeometryDirectly(point);
+  if (filter.nodes) {
+    // export nodes
+    for (size_t idx = 0; idx < tile->header()->nodecount();
+         ++idx, nodeid++) {
+      auto ni = tile->node(idx);
+      if (!costing->Allowed(ni))
+        continue;
+      auto ll = tile->get_node_ll(nodeid);
+      OGRFeature* feature =
+          OGRFeature::CreateFeature(nodes_layer->GetLayerDefn());
+      auto point = new OGRPoint();
+      point->setX(ll.lng());
+      point->setY(ll.lat());
+      feature->SetGeometryDirectly(point);
 
-    if (filter.type) {
-      feature->SetField("type",
-                        valhalla::baldr::to_string(ni->type()).c_str());
-    }
-    if (nodes_layer->CreateFeature(feature) != OGRERR_NONE) {
-      LOG_ERROR("Failed to create feature");
-    }
+      if (filter.type) {
+        feature->SetField("type",
+                          valhalla::baldr::to_string(ni->type()).c_str());
+      }
+      if (nodes_layer->CreateFeature(feature) != OGRERR_NONE) {
+        LOG_ERROR("Failed to create feature");
+      }
 
-    OGRFeature::DestroyFeature(feature);
+      OGRFeature::DestroyFeature(feature);
+    }
   }
+
+  if (!filter.edges)
+    return;
 
   // export edges
   for (size_t idx = 0; idx < tile->header()->directededgecount(); ++idx) {
     auto de = tile->directededge(idx);
+
+    // it's a shortcut but we want none or it's not but we only want
+    // shortcuts
     if ((!filter.shortcuts_only && de->is_shortcut()) ||
         (filter.shortcuts_only && !de->is_shortcut()))
       continue;
 
-    if (!costing->Allowed(de, tile, valhalla::sif::kDisallowNone))
+    if (!costing->Allowed(de, tile, valhalla::sif::kDisallowNone) ||
+        filter.is_filtered(de, tile, costing))
       continue;
 
     auto ei = tile->edgeinfo(de);
@@ -291,8 +346,7 @@ void export_tile(valhalla::baldr::GraphReader& reader,
     OGRLineString* line = ConvertToOGRLineString(shape);
     OGRFeature* feature =
         OGRFeature::CreateFeature(edges_layer->GetLayerDefn());
-    feature->SetGeometryDirectly(
-        line); // valhalla edge shapes are good right? right?
+    feature->SetGeometryDirectly(line);
 
     if (filter.localidx) {
       feature->SetField("edgeid", static_cast<int>(idx));
@@ -348,7 +402,7 @@ void export_tile(valhalla::baldr::GraphReader& reader,
 
 void work(boost::property_tree::ptree& config,
           const std::string& output_dir,
-          valhalla::Api& request,
+          const std::string& file_suffix,
           valhalla::sif::cost_ptr_t costing,
           const AttributeFilter& filter,
           std::queue<valhalla::baldr::GraphId>& tile_queue,
@@ -375,7 +429,7 @@ void work(boost::property_tree::ptree& config,
       tile_id = tile_queue.front();
       tile_queue.pop();
     }
-    export_tile(reader, tile_id, output_dir, request, costing, driver,
+    export_tile(reader, tile_id, output_dir, file_suffix, costing, driver,
                 dataset_options, filter);
   }
 }
@@ -387,15 +441,15 @@ void work(boost::property_tree::ptree& config,
  * @param config the config object
  * @param output_dir the directory to which the files will be written
  * (follows graph tile structuring within the directory)
- * @param request some request options, right now only used for the costing
- * and attribute controlling
+ * @param file_suffix file suffix to be applied to each file prior to the
+ * file extension
  * @param costing the costing to filter allowed/disallowed edges
  * @param filter which attributes to include/exclude
  * @param tile_ids which tiles to export
  */
 int export_tiles(boost::property_tree::ptree& config,
                  const std::string& output_dir,
-                 valhalla::Api& request,
+                 const std::string& file_suffix,
                  valhalla::sif::cost_ptr_t costing,
                  const AttributeFilter& filter,
                  std::vector<std::string>& tile_ids) {
@@ -423,8 +477,8 @@ int export_tiles(boost::property_tree::ptree& config,
   for (size_t i = 0; i < threads.size(); ++i) {
     threads[i] = std::make_shared<std::thread>(work, std::ref(config),
                                                std::cref(output_dir),
-                                               std::ref(request), costing,
-                                               std::cref(filter),
+                                               std::cref(file_suffix),
+                                               costing, std::cref(filter),
                                                std::ref(tile_queue),
                                                std::ref(lock));
   }
@@ -441,8 +495,10 @@ int main(int argc, char** argv) {
   boost::property_tree::ptree pt;
   std::vector<std::string> tile_ids;
   std::string output_dir;
-  valhalla::Api request;
   std::string costing_str;
+  std::string search_filter_str;
+  std::string file_suffix;
+  valhalla::baldr::PathLocation::SearchFilter search_filter;
   std::vector<std::string> includes;
   std::vector<std::string> excludes;
   std::vector<unsigned int> predicted_speed_indices;
@@ -460,14 +516,16 @@ int main(int argc, char** argv) {
     ("j,concurrency", "Number of threads to use.", cxxopts::value<unsigned int>())
     ("c,config", "Path to the json configuration file.", cxxopts::value<std::string>())
     ("i,inline-config", "Inline json config.",cxxopts::value<std::string>())
-    ("o,costing", "Costing to use", cxxopts::value<std::string>())
+    ("o,costing", "Costing to use", cxxopts::value<std::string>()->default_value("none"))
     ("e,exclude-attributes", "Attributes to exclude", cxxopts::value<std::vector<std::string>>())
     ("a,include-attributes", "Attributes to include", cxxopts::value<std::vector<std::string>>())
     ("d,output-directory", "Directory in which output files will be written", cxxopts::value<std::string>())
     ("g,complete-graph", "Export the complete graph", cxxopts::value<bool>())
+    ("f,search-filter", "Edge search filter as JSON. For more info see https://valhalla.github.io/valhalla/api/turn-by-turn/api-reference/#locations", cxxopts::value<std::string>())
     ("ss,predicted-speed-index-start", "At which bucket index to start exporting predicted speeds", cxxopts::value<unsigned int>())
     ("se,predicted-speed-index-end", "At which bucket index to end exporting predicted speeds", cxxopts::value<unsigned int>())
     ("t,shortcuts-only", "Whether to only output shortcut edges", cxxopts::value<bool>())
+    ("u,file-suffix", "suffix to apply prior to the file extension", cxxopts::value<std::string>())
     ("TILEID", "If provided, only export features matching the passed tile IDs. Can alternatively be passed via stdin", cxxopts::value<std::vector<std::string>>());
     // clang-format on
 
@@ -482,6 +540,60 @@ int main(int argc, char** argv) {
     // try from positional arguments
     if (result["TILEID"].count() != 0) {
       tile_ids = result["TILEID"].as<std::vector<std::string>>();
+    }
+
+    if (result["file-suffix"].count()) {
+      file_suffix = result["file-suffix"].as<std::string>();
+    }
+
+    if (result["search-filter"].count() != 0) {
+      try {
+        // parse some json
+        rapidjson::Document doc;
+        doc.Parse(result["search-filter"].as<std::string>().c_str());
+
+        auto min_road_class =
+            rapidjson::get<std::string>(doc, "/min_road_class",
+                                        "service_other");
+        valhalla::RoadClass min_rc;
+        if (RoadClass_Enum_Parse(min_road_class, &min_rc)) {
+          search_filter.min_road_class_ = min_rc;
+        }
+
+        auto max_road_class =
+            rapidjson::get<std::string>(doc, "/max_road_class",
+                                        "motorway");
+        valhalla::RoadClass max_rc;
+        if (RoadClass_Enum_Parse(max_road_class, &max_rc)) {
+          search_filter.max_road_class_ = max_rc;
+        }
+
+        search_filter.exclude_tunnel_ =
+            rapidjson::get<bool>(doc, "/exclude_tunnel", false);
+
+        search_filter.exclude_bridge_ =
+            rapidjson::get<bool>(doc, "/exclude_bridge", false);
+
+        search_filter.exclude_toll_ =
+            rapidjson::get<bool>(doc, "/exclude_toll", false);
+
+        search_filter.exclude_ramp_ =
+            rapidjson::get<bool>(doc, "/exclude_ramp", false);
+
+        search_filter.exclude_ferry_ =
+            rapidjson::get<bool>(doc, "/exclude_ferry", false);
+
+        search_filter.level_ =
+            rapidjson::get<float>(doc, "/level",
+                                  valhalla::baldr::kMaxLevel);
+
+        search_filter.exclude_closures_ =
+            rapidjson::get<bool>(doc, "/exclude_closures", false);
+      } catch (std::exception& e) {
+        LOG_ERROR("Failed to parse search filter JSON: " +
+                  std::string(e.what()));
+        return EXIT_FAILURE;
+      }
     }
 
     if (result["shortcuts-only"].count() != 0) {
@@ -554,9 +666,9 @@ int main(int argc, char** argv) {
 
     AttributeFilter filter(std::move(includes), std::move(excludes),
                            std::move(predicted_speed_indices),
-                           shortcuts_only);
+                           search_filter, shortcuts_only);
     valhalla::sif::cost_ptr_t costing = create_costing(costing_str);
-    return export_tiles(pt, output_dir, request, costing, filter,
+    return export_tiles(pt, output_dir, file_suffix, costing, filter,
                         tile_ids);
   } catch (std::exception& e) {
     std::cout << "Failed to export tiles: " << e.what() << "\n";
