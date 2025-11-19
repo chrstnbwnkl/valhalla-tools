@@ -1,11 +1,11 @@
 #include <iostream>
+#include <thread>
 
 #include <boost/property_tree/ptree.hpp>
 #include <cxxopts.hpp>
 
 #include <valhalla/baldr/rapidjson_utils.h>
 #include <valhalla/config.h>
-#include <valhalla/filesystem.h>
 #include <valhalla/midgard/logging.h>
 #include <valhalla/midgard/util.h>
 
@@ -59,7 +59,7 @@ bool parse_common_args(const std::string& program,
   if (result.count("inline-config")) {
     conf = valhalla::config(result["inline-config"].as<std::string>());
   } else if (result.count("config") &&
-             filesystem::is_regular_file(
+             std::filesystem::is_regular_file(
                  result["config"].as<std::string>())) {
     conf = valhalla::config(result["config"].as<std::string>());
   } else {

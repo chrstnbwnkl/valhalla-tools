@@ -7,6 +7,7 @@
 
 namespace {
 using namespace valhalla;
+using namespace valhalla::baldr;
 
 void work(std::queue<baldr::GraphId>& tile_queue,
           std::mutex& lock,

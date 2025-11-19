@@ -60,6 +60,7 @@ set(lib valhalla_tools)
 add_library(${lib} ${lib_sources})
 target_include_directories(${lib} PUBLIC
   PkgConfig::libvalhalla
+  ${CMAKE_SOURCE_DIR}/src
   ${libvalhalla_INCLUDE_DIRS}/third_party
   ${CMAKE_SOURCE_DIR}/include) 
 
@@ -99,6 +100,14 @@ add_tool(
   INCLUDE_DIRECTORIES
   PUBLIC 
       ${CMAKE_SOURCE_DIR}/third_party/rapidjson/include
+  DEPENDS
+    PkgConfig::libvalhalla 
+    PkgConfig::libprime_server 
+    ${lib}
+)
+
+add_tool(
+  NAME valhalla_tile_stats 
   DEPENDS
     PkgConfig::libvalhalla 
     PkgConfig::libprime_server 
