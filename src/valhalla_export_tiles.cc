@@ -23,7 +23,8 @@
 
 namespace {
 
-const std::string kEdgePredictedSpeeds = "edge.predicted_speeds";
+constexpr const char* kEdgePredictedSpeeds = "edge.predicted_speeds";
+constexpr const char* kEdgeOverallLiveSpeed = "edge.overall_live_speed";
 
 struct AttributeFilter {
   AttributeFilter(
@@ -60,6 +61,7 @@ struct AttributeFilter {
         {urban, kEdgeIsUrban},
         {predicted_speeds, kEdgePredictedSpeeds},
         {country_crossing, kEdgeCountryCrossing},
+        {overall_live_speed, kEdgeOverallLiveSpeed},
     };
 
     std::vector<std::pair<bool&, std::string>> node_pairs = {
@@ -139,6 +141,7 @@ struct AttributeFilter {
   bool urban{false};
   bool country_crossing{false};
   bool predicted_speeds{false};
+  bool overall_live_speed{false};
   std::vector<unsigned int> pred_speed_indices{};
 
   bool shortcuts_only{false};
@@ -287,6 +290,10 @@ void export_tile(valhalla::baldr::GraphReader& reader,
       edges_layer->CreateField(&field_name);
     }
   }
+  if (filter.overall_live_speed) {
+    OGRFieldDefn field_name("overall_live_speed", OFTInteger);
+    edges_layer->CreateField(&field_name);
+  }
 
   if (filter.type) {
     OGRFieldDefn field_name("type", OFTString);
@@ -387,6 +394,13 @@ void export_tile(valhalla::baldr::GraphReader& reader,
         }
       }
     }
+
+    if (filter.overall_live_speed) {
+      const volatile TrafficSpeed& ts = tile->trafficspeed(de);
+      feature->SetField("overall_live_speed",
+                        static_cast<int>(ts.get_overall_speed()));
+    }
+
     if (edges_layer->CreateFeature(feature) != OGRERR_NONE) {
       LOG_ERROR("Failed to create feature");
     }
